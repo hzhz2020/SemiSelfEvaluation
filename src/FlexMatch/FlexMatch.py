@@ -29,6 +29,7 @@ from torchvision import transforms
 from torch.utils.tensorboard import SummaryWriter
 
 from libml.cifar10_data import CIFAR10 as dataset
+from libml.randaugment import RandAugmentMC
 from libml.utils import save_pickle
 from libml.utils import train_one_epoch, eval_model
 from libml.models.ema import ModelEMA
@@ -48,7 +49,7 @@ parser.add_argument('--arch', default='wideresnet', type=str, help='backbone to 
 parser.add_argument('--train_epoch', default=300, type=int, help='total epochs to run')
 parser.add_argument('--nimg_per_epoch', default=2400, type=int, help='how many images in the labeled train set')
 parser.add_argument('--start_epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--eval_every_Xepoch', default=1, type=int, help='manual epoch number (useful on restarts)')
+parser.add_argument('--eval_every_Xepoch', default=1, type=int)
 
 
 #hyperparameters inherit from Echo_ClinicalManualScript_torch style
@@ -73,7 +74,7 @@ parser.add_argument('--labeledtrain_batchsize', default=50, type=int)
 parser.add_argument('--unlabeledtrain_batchsize', default=50, type=int)
 parser.add_argument("--em", default=0, type=float, help="coefficient of entropy minimization. If you try VAT + EM, set 0.06")
 
-#PL config
+#FM config
 parser.add_argument('--dropout_rate', default=0.0, type=float, help='dropout_rate')
 
 parser.add_argument('--lr', default=3e-4, type=float, help='learning rate')
@@ -84,18 +85,21 @@ parser.add_argument('--lambda_u_max', default=1, type=float, help='coefficient o
 
 parser.add_argument('--temperature', default=0.95, type=float, help='temperature for label guessing')
 
-parser.add_argument('--alpha', default=0.75, type=float)
+parser.add_argument('--mu', default=7, type=int,
+                    help='coefficient of unlabeled batch size')
+
+parser.add_argument('--threshold', default=0.95, type=float,
+                    help='pseudo label threshold')
 
 parser.add_argument('--lr_warmup_img', default=0, type=float,
                     help='warmup images for linear rate schedule') #following MixMatch and FixMatch repo
-
 
 parser.add_argument('--optimizer_type', default='SGD', choices=['SGD', 'Adam'], type=str) 
 parser.add_argument('--lr_schedule_type', default='CosineLR', choices=['CosineLR', 'FixedLR'], type=str) 
 parser.add_argument('--lr_cycle_length', default='1048576', type=str) #following MixMatch and FixMatch repo
 
+
 parser.add_argument('--unlabeledloss_warmup_iterations', default='16000', type=str, help='position at which unlabeled loss warmup ends') #following MixMatch and FixMatch repo
-parser.add_argument('--unlabeledloss_warmup_schedule_type', default='GoogleFixmatchMixmatchRepo_Exact', choices=['GoogleFixmatchMixmatchRepo_Exact', 'GoogleFixmatchMixmatchRepo_Like', 'YU1utRepo_Exact', 'YU1utRepo_Like', 'PerryingRepo_Exact', 'PerryingRepo_Like'], type=str) 
 
 
 
@@ -122,11 +126,11 @@ def str2bool(s):
     
 
 #checked
-def save_checkpoint(state, is_best, checkpoint_dir, filename='last_checkpoint.pth.tar'):
-    filepath = os.path.join(checkpoint_dir, filename)
+def save_checkpoint(state, is_best, checkpoint, filename='last_checkpoint.pth.tar'):
+    filepath = os.path.join(checkpoint, filename)
     torch.save(state, filepath)
     if is_best:
-        shutil.copyfile(filepath, os.path.join(checkpoint_dir,
+        shutil.copyfile(filepath, os.path.join(checkpoint,
                                                'model_best.pth.tar'))
         
 #checked
@@ -134,6 +138,7 @@ def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    
     
     
 #learning rate schedule   
@@ -165,7 +170,7 @@ def get_fixed_lr(optimizer,
 
 
 
-def create_model(args):
+def create_model(args, transform_fn):
     if args.arch == 'wideresnet':
         import libml.models.wideresnet as models
         model_depth = 28
@@ -176,11 +181,14 @@ def create_model(args):
                                         num_classes=args.num_classes)
     else:
         raise NameError('Note implemented yet')
+    
+    
+#     trainable_paramters = sum([p.data.nelement() for p in model.parameters()])
+# print("trainable parameters : {}".format(trainable_paramters))
 
     
-    logger.info("Total trainable params: {:.2f}M".format(
-        sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6))
-    
+    logger.info("Total params: {:.2f}M".format(
+        sum(p.numel() for p in model.parameters())/1e6))
     return model
 
 
@@ -188,12 +196,10 @@ def create_model(args):
 
 def main(args, brief_summary):
     
-    #different from https://github.com/YU1ut/MixMatch-pytorch/blob/master/dataset/cifar10.py: where hz's implementation follows kekmodel fixmatch first do augmentation then normalize.
-    
     #define transform for each part of the dataset
     cifar10_mean = (0.4914, 0.4822, 0.4465)
     cifar10_std = (0.2471, 0.2435, 0.2616)
-    
+
     
     transform_labeledtrain = transforms.Compose([
         transforms.RandomHorizontalFlip(),
@@ -210,20 +216,33 @@ def main(args, brief_summary):
     ])
     
     
-    class TransformTwice:
-        def __init__(self, transform_fn):
-            self.transform_fn = transform_fn
-        
+    class TransformFixMatch(object):
+        def __init__(self, mean, std):
+            self.weak = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(size=32,
+                                      padding=int(32*0.125),
+                                      padding_mode='reflect')])
+            self.strong = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(size=32,
+                                      padding=int(32*0.125),
+                                      padding_mode='reflect'),
+                RandAugmentMC(n=2, m=10)])
+            self.normalize = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std)])
+
         def __call__(self, x):
-            out1 = self.transform_fn(x)
-            out2 = self.transform_fn(x)
+            weak = self.weak(x)
+            strong = self.strong(x)
+            return self.normalize(weak), self.normalize(strong)
+
         
-            return out1, out2
         
-    
     
     l_train_dataset = dataset(args.l_train_dataset_path, transform_fn=transform_labeledtrain)
-    u_train_dataset = dataset(args.u_train_dataset_path, transform_fn=TransformTwice(transform_labeledtrain))
+    u_train_dataset = dataset(args.u_train_dataset_path, transform_fn=TransformFixMatch(mean=cifar10_mean, std=cifar10_std))
     val_dataset = dataset(args.val_dataset_path, transform_fn=transform_eval)
     test_dataset = dataset(args.test_dataset_path, transform_fn=transform_eval)
     
@@ -245,9 +264,9 @@ def main(args, brief_summary):
 
     
     #create model
-    model = create_model(args) 
+    model = create_model(args, transform_fn=None) #use transform_fn=None, since MM script already applied transform when constructing dataset
     model.to(args.device)
-
+    
     #optimizer_type choice
     no_decay = ['bias', 'bn']
     grouped_parameters = [
@@ -256,15 +275,17 @@ def main(args, brief_summary):
             {'params': [p for n, p in model.named_parameters() if any(
                 nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
-        
+
     if args.optimizer_type == 'SGD':
         optimizer = optim.SGD(grouped_parameters, lr=args.lr,
                               momentum=0.9, nesterov=args.nesterov)
         
     elif args.optimizer_type == 'Adam':
-        optimizer = optim.Adam(grouped_parameters, lr=args.lr)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr)
     else:
         raise NameError('Not supported optimizer setting')
+    
+    
     
     #lr_schedule_type choice
     if args.lr_schedule_type == 'CosineLR':
@@ -276,7 +297,7 @@ def main(args, brief_summary):
     else:
         raise NameError('Not supported lr scheduler setting')
         
-    
+            
     #instantiate the ema model object
     ema_model = ModelEMA(args, model, args.ema_decay)
     
@@ -347,8 +368,9 @@ def main(args, brief_summary):
         train_loss_dict['unlabeled_loss_scaled'].extend(train_unlabeled_loss_scaled_list)
         
         save_pickle(os.path.join(args.experiment_dir, 'losses'), 'losses_dict.pkl', train_loss_dict)
-
+        
         if epoch % args.eval_every_Xepoch == 0:
+
             #val
             val_loss, val_raw_acc, val_ema_acc, val_true_labels, val_raw_predictions, val_ema_predictions = eval_model(args, val_loader, model, ema_model.ema, epoch, evaluation_criterion='plain_accuracy')
             val_predictions_save_dict['raw_acc'] = val_raw_acc
@@ -358,7 +380,7 @@ def main(args, brief_summary):
             val_predictions_save_dict['ema_predictions'] = val_ema_predictions
 
 #             save_pickle(os.path.join(args.experiment_dir, 'predictions'), 'val_epoch_{}_predictions.pkl'.format(str(epoch)), val_predictions_save_dict)
-        
+
             #test
             test_loss, test_raw_acc, test_ema_acc, test_true_labels, test_raw_predictions, test_ema_predictions = eval_model(args, test_loader, model, ema_model.ema, epoch, evaluation_criterion='plain_accuracy')
 
@@ -378,7 +400,7 @@ def main(args, brief_summary):
             train_predictions_save_dict['true_labels'] = train_true_labels
             train_predictions_save_dict['raw_predictions'] = train_raw_predictions
             train_predictions_save_dict['ema_predictions'] = train_ema_predictions
-        
+            
             if val_raw_acc > best_val_raw_acc:
 
                 best_val_raw_acc = val_raw_acc
@@ -388,9 +410,9 @@ def main(args, brief_summary):
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_raw_val'), 'val_predictions.pkl', val_predictions_save_dict)
 
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_raw_val'), 'test_predictions.pkl', test_predictions_save_dict)
-            
+
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_raw_val'), 'train_predictions.pkl', train_predictions_save_dict)
-        
+
             if val_ema_acc > best_val_ema_acc:
                 is_best=True
 
@@ -403,7 +425,7 @@ def main(args, brief_summary):
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_ema_val'), 'test_predictions.pkl', test_predictions_save_dict)
                 
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_ema_val'), 'train_predictions.pkl', train_predictions_save_dict)
-        
+
             save_checkpoint(
                 {
                 'epoch': epoch+1,
@@ -418,13 +440,14 @@ def main(args, brief_summary):
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
                 }, is_best, args.experiment_dir)
-
+            
             #return is_best to False
             is_best = False
-        
-            logger.info('RAW Best , validation/test/train %.2f %.2f ' % (best_val_raw_acc, best_test_raw_acc_at_val, best_train_raw_acc_at_val))
 
-            logger.info('EMA Best, validation/test/train %.2f %.2f ' % (best_val_ema_acc, best_test_raw_acc_at_val, best_train_raw_acc_at_val))
+            logger.info('RAW Best , validation/test/train %.2f %.2f %.2f ' % (best_val_raw_acc, best_test_raw_acc_at_val, best_train_raw_acc_at_val))
+
+            logger.info('EMA Best, validation/test/train %.2f %.2f %.2f ' % (best_val_ema_acc, best_test_ema_acc_at_val, best_train_ema_acc_at_val))
+
 
             args.writer.add_scalar('train/1.train_raw_acc', train_raw_acc, epoch)
             args.writer.add_scalar('train/2.train_ema_acc', train_ema_acc, epoch)
@@ -454,7 +477,9 @@ def main(args, brief_summary):
             
             with open(os.path.join(args.experiment_dir + "brief_summary.json"), "w") as f:
                 json.dump(brief_summary, f)
-    
+
+            
+
     brief_summary["number_of_data"] = {
     "labeled":len(l_train_dataset), "unlabeled":len(u_train_dataset),
     "validation":len(val_dataset), "test":len(test_dataset)
@@ -500,10 +525,9 @@ if __name__ == '__main__':
     args.train_iterations = args.train_epoch*args.nimg_per_epoch//args.labeledtrain_batchsize
     print('designated train iterations: {}'.format(args.train_iterations))
     
-    
-    experiment_name = "Optimizer-{}_LrSchedule-{}_LrCycleLength-{}_UnlabeledlossWarmupSchedule-{}_UnlabeledlossWarmupIteations-{}_LambdaUMax-{}_lr-{}_wd-{}_temperature-{}_alpha-{}_em-{}".format(args.optimizer_type, args.lr_schedule_type, args.lr_cycle_length, args.unlabeledloss_warmup_schedule_type, args.unlabeledloss_warmup_iterations, args.lambda_u_max, args.lr, args.wd,  args.temperature, args.alpha, args.em)
-    
-#     experiment_name = "dropout{}_lr{}_wd{}_LambdaUMax{}_temperature{}_alpha{}_UnlabeledlossWarmupIterations{}_LrWarmupImg{}_em{}_LabeledtrainBatchsize{}_UnlabeledlossWarmupScheduleType{}_OptimizerType{}_LrScheduleType{}".format(args.dropout_rate, args.lr, args.wd, args.lambda_u_max, args.temperature, args.alpha, args.unlabeledloss_warmup_iterations, args.lr_warmup_img, args.em, args.labeledtrain_batchsize, args.unlabeledloss_warmup_schedule_type, args.optimizer_type, args.lr_schedule_type)
+    experiment_name = "Optimizer-{}_LrSchedule-{}_LrCycleLength-{}_UnlabeledlossWarmupSchedule-NO_UnlabeledlossWarmupIteations-{}_LambdaUMax-{}_lr-{}_wd-{}_temperature-{}_mu-{}_threshold-{}_em-{}".format(args.optimizer_type, args.lr_schedule_type, args.lr_cycle_length, args.unlabeledloss_warmup_iterations, args.lambda_u_max, args.lr, args.wd,  args.temperature, args.mu, args.threshold, args.em)
+
+#     experiment_name = "dropout{}_lr{}_wd{}_lambda_u_max{}_temperature{}_mu{}_threshold{}_unlabeledloss_warmup_iterations{}_lr_warmup_img{}_em{}".format(args.dropout_rate, args.lr, args.wd, args.lambda_u_max, args.temperature, args.mu, args.threshold, args.unlabeledloss_warmup_iterations, args.lr_warmup_img, args.em)
     
     args.experiment_dir = os.path.join(args.train_dir, experiment_name)
     
@@ -519,19 +543,20 @@ if __name__ == '__main__':
     #brief summary:
     brief_summary = {}
     brief_summary['dataset_name'] = args.dataset_name
-    brief_summary['algorithm'] = 'MM_RE4'
+    brief_summary['algorithm'] = 'FM_RE3'
     brief_summary['hyperparameters'] = {
         'optimizer': args.optimizer_type,
         'lr_schedule_type': args.lr_schedule_type,
         'lr_cycle_length': args.lr_cycle_length,
-        'unlabeledloss_warmup_schedule_type':args.unlabeledloss_warmup_schedule_type,
+        'unlabeledloss_warmup_schedule_type':'NO',
         'unlabeledloss_warmup_iterations': args.unlabeledloss_warmup_iterations,
-        'lambda_u_max': args.lambda_u_max,
+        'lambda_u_max': args.lambda_u_max,        
         'lr': args.lr,
         'wd': args.wd,
         'temperature': args.temperature,
-        'alpha': args.alpha,
-        'dropout_rate':args.dropout_rate,        
+        'mu': args.mu,
+        'threshold':args.threshold,
+        'dropout_rate':args.dropout_rate,
 
     }
     

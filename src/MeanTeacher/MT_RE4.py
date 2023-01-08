@@ -45,7 +45,6 @@ parser.add_argument('--dataset_name', default='cifar10', type=str, help='name of
 parser.add_argument('--data_seed', default=0, type=int, help='random seed data partitioning procedure')
 parser.add_argument('--training_seed', default=0, type=int, help='random seed for training procedure')
 parser.add_argument("--nlabels", "-n", default=1000, type=int, help="the number of labeled data")
-parser.add_argument("--OliverContaminationLevel", "-lvl", default=0, type=int, help="which level of Oliver Contamination setting: [0, 25, 50, 75, 100]")
 
 parser.add_argument('--arch', default='wideresnet', type=str, help='backbone to use')
 parser.add_argument('--train_epoch', default=300, type=int, help='total epochs to run')
@@ -72,9 +71,6 @@ parser.add_argument('--val_dataset_path', default='', type=str)
 parser.add_argument('--test_dataset_path', default='', type=str)
 
 #shared config
-parser.add_argument('--flip', default='True', type=str)
-parser.add_argument('--r_crop', default='True', type=str)
-parser.add_argument('--g_noise', default='True', type=str)
 parser.add_argument('--labeledtrain_batchsize', default=50, type=int)
 parser.add_argument('--unlabeledtrain_batchsize', default=50, type=int)
 parser.add_argument("--em", default=0, type=float, help="coefficient of entropy minimization. If you try VAT + EM, set 0.06")
@@ -110,7 +106,7 @@ parser.add_argument('--use_ema', action='store_true', default=True,
 parser.add_argument('--ema_decay', default=0.999, type=float,
                     help='EMA decay rate')
 
-parser.add_argument('--num_classes', default=6, type=int)
+parser.add_argument('--num_classes', default=10, type=int)
 
 def str2bool(s):
     if s == 'True':
@@ -248,20 +244,20 @@ def main(args, brief_summary):
     model.to(args.device)
     
     #optimizer_type choice
-    if args.optimizer_type == 'SGD':
-        no_decay = ['bias', 'bn']
-        grouped_parameters = [
-            {'params': [p for n, p in model.named_parameters() if not any(
-                nd in n for nd in no_decay)], 'weight_decay': args.wd},
-            {'params': [p for n, p in model.named_parameters() if any(
-                nd in n for nd in no_decay)], 'weight_decay': 0.0}
-        ]
+    no_decay = ['bias', 'bn']
+    grouped_parameters = [
+        {'params': [p for n, p in model.named_parameters() if not any(
+            nd in n for nd in no_decay)], 'weight_decay': args.wd},
+        {'params': [p for n, p in model.named_parameters() if any(
+            nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    ]
         
+    if args.optimizer_type == 'SGD':
         optimizer = optim.SGD(grouped_parameters, lr=args.lr,
                               momentum=0.9, nesterov=args.nesterov)
     
     elif args.optimizer_type == 'Adam':
-        optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        optimizer = optim.Adam(grouped_parameters, lr=args.lr)
 
     else:
         raise NameError('Not supported optimizer setting')
@@ -286,9 +282,11 @@ def main(args, brief_summary):
     
     best_val_ema_acc = 0
     best_test_ema_acc_at_val = 0
+    best_train_ema_acc_at_val = 0
     
     best_val_raw_acc = 0
     best_test_raw_acc_at_val = 0
+    best_train_raw_acc_at_val = 0
     
     
     if args.resume_checkpoint_fullpath is not None:
@@ -302,9 +300,11 @@ def main(args, brief_summary):
 
             best_val_ema_acc = checkpoint['best_val_ema_acc']
             best_test_ema_acc_at_val = checkpoint['best_test_ema_acc_at_val']
+            best_train_ema_acc_at_val = checkpoint['best_train_ema_acc_at_val']
             
             best_val_raw_acc = checkpoint['best_val_raw_acc']
             best_test_raw_acc_at_val = checkpoint['best_test_raw_acc_at_val']
+            best_train_raw_acc_at_val = checkpoint['best_train_raw_acc_at_val']
             
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
@@ -329,6 +329,7 @@ def main(args, brief_summary):
     for epoch in range(args.start_epoch, args.train_epoch):
         val_predictions_save_dict = dict()
         test_predictions_save_dict = dict()
+        train_predictions_save_dict = dict()
         
         #train
         train_total_loss_list, train_labeled_loss_list, train_unlabeled_loss_unscaled_list, train_unlabeled_loss_scaled_list = train_one_epoch(args, ssl_obj, l_loader, u_loader, model, ema_model, optimizer, scheduler, epoch)
@@ -349,7 +350,7 @@ def main(args, brief_summary):
             val_predictions_save_dict['raw_predictions'] = val_raw_predictions
             val_predictions_save_dict['ema_predictions'] = val_ema_predictions
 
-            save_pickle(os.path.join(args.experiment_dir, 'predictions'), 'val_epoch_{}_predictions.pkl'.format(str(epoch)), val_predictions_save_dict)
+#             save_pickle(os.path.join(args.experiment_dir, 'predictions'), 'val_epoch_{}_predictions.pkl'.format(str(epoch)), val_predictions_save_dict)
 
             #test
             test_loss, test_raw_acc, test_ema_acc, test_true_labels, test_raw_predictions, test_ema_predictions = eval_model(args, test_loader, model, ema_model.ema, epoch, evaluation_criterion='plain_accuracy')
@@ -360,27 +361,40 @@ def main(args, brief_summary):
             test_predictions_save_dict['raw_predictions'] = test_raw_predictions
             test_predictions_save_dict['ema_predictions'] = test_ema_predictions
 
-            save_pickle(os.path.join(args.experiment_dir, 'predictions'), 'test_epoch_{}_predictions.pkl'.format(str(epoch)), test_predictions_save_dict)
+#             save_pickle(os.path.join(args.experiment_dir, 'predictions'), 'test_epoch_{}_predictions.pkl'.format(str(epoch)), test_predictions_save_dict)
+
+            train_loss, train_raw_acc, train_ema_acc, train_true_labels, train_raw_predictions, train_ema_predictions = eval_model(args, l_loader, model, ema_model.ema, epoch, evaluation_criterion='plain_accuracy')
+
+            train_predictions_save_dict['raw_acc'] = train_raw_acc
+            train_predictions_save_dict['ema_acc'] = train_ema_acc
+            train_predictions_save_dict['true_labels'] = train_true_labels
+            train_predictions_save_dict['raw_predictions'] = train_raw_predictions
+            train_predictions_save_dict['ema_predictions'] = train_ema_predictions
 
             if val_raw_acc > best_val_raw_acc:
 
                 best_val_raw_acc = val_raw_acc
                 best_test_raw_acc_at_val = test_raw_acc
+                best_train_raw_acc_at_val = train_raw_acc
 
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_raw_val'), 'val_predictions.pkl', val_predictions_save_dict)
 
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_raw_val'), 'test_predictions.pkl', test_predictions_save_dict)
-
+                
+                save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_raw_val'), 'train_predictions.pkl', train_predictions_save_dict)
 
             if val_ema_acc > best_val_ema_acc:
                 is_best=True
 
                 best_val_ema_acc = val_ema_acc
                 best_test_ema_acc_at_val = test_ema_acc
+                best_train_ema_acc_at_val = train_ema_acc
 
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_ema_val'), 'val_predictions.pkl', val_predictions_save_dict)
 
                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_ema_val'), 'test_predictions.pkl', test_predictions_save_dict)
+                
+                save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_ema_val'), 'train_predictions.pkl', train_predictions_save_dict)
 
             save_checkpoint(
                 {
@@ -391,6 +405,8 @@ def main(args, brief_summary):
                 'best_val_raw_acc': best_val_raw_acc,
                 'best_test_ema_acc_at_val': best_test_ema_acc_at_val,
                 'best_test_raw_acc_at_val': best_test_raw_acc_at_val,
+                'best_train_ema_acc_at_val': best_train_ema_acc_at_val,
+                'best_train_raw_acc_at_val': best_train_raw_acc_at_val,
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
                 }, is_best, args.experiment_dir)
@@ -398,15 +414,17 @@ def main(args, brief_summary):
             #return is_best to False
             is_best = False
 
-            logger.info('RAW Best , validation/test %.2f %.2f ' % (best_val_raw_acc, best_test_raw_acc_at_val))
+            logger.info('RAW Best , validation/test/train %.2f %.2f %.2f ' % (best_val_raw_acc, best_test_raw_acc_at_val, best_train_raw_acc_at_val))
 
-            logger.info('EMA Best, validation/test %.2f %.2f ' % (best_val_ema_acc, best_test_ema_acc_at_val))
+            logger.info('EMA Best, validation/test/train %.2f %.2f %.2f ' % (best_val_ema_acc, best_test_ema_acc_at_val, best_train_ema_acc_at_val))
 
 
-            args.writer.add_scalar('train/1.total_loss', np.mean(train_total_loss_list), epoch)
-            args.writer.add_scalar('train/2.labeled_loss', np.mean(train_labeled_loss_list), epoch)
-            args.writer.add_scalar('train/3.unlabeled_loss_unscaled', np.mean(train_unlabeled_loss_unscaled_list), epoch)
-            args.writer.add_scalar('train/4.unlabele_loss_scaled', np.mean(train_unlabeled_loss_scaled_list), epoch)
+            args.writer.add_scalar('train/1.train_raw_acc', train_raw_acc, epoch)
+            args.writer.add_scalar('train/2.train_ema_acc', train_ema_acc, epoch)
+            args.writer.add_scalar('train/3.total_loss', np.mean(train_total_loss_list), epoch)
+            args.writer.add_scalar('train/4.labeled_loss', np.mean(train_labeled_loss_list), epoch)
+            args.writer.add_scalar('train/5.unlabeled_loss_unscaled', np.mean(train_unlabeled_loss_unscaled_list), epoch)
+            args.writer.add_scalar('train/6.unlabele_loss_scaled', np.mean(train_unlabeled_loss_scaled_list), epoch)
 
 
             args.writer.add_scalar('val/1.val_raw_acc', val_raw_acc, epoch)
@@ -422,6 +440,8 @@ def main(args, brief_summary):
 }
             brief_summary['best_test_ema_acc_at_val'] = best_test_ema_acc_at_val 
             brief_summary['best_test_raw_acc_at_val'] = best_test_raw_acc_at_val
+            brief_summary['best_train_ema_acc_at_val'] = best_train_ema_acc_at_val 
+            brief_summary['best_train_raw_acc_at_val'] = best_train_raw_acc_at_val
             brief_summary['best_val_ema_acc'] = best_val_ema_acc
             brief_summary['best_val_raw_acc'] = best_val_raw_acc
             
@@ -435,6 +455,8 @@ def main(args, brief_summary):
 }
     brief_summary['best_test_ema_acc_at_val'] = best_test_ema_acc_at_val 
     brief_summary['best_test_raw_acc_at_val'] = best_test_raw_acc_at_val
+    brief_summary['best_train_ema_acc_at_val'] = best_train_ema_acc_at_val 
+    brief_summary['best_train_raw_acc_at_val'] = best_train_raw_acc_at_val
     brief_summary['best_val_ema_acc'] = best_val_ema_acc
     brief_summary['best_val_raw_acc'] = best_val_raw_acc
 
