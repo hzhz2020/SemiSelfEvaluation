@@ -76,24 +76,24 @@ parser.add_argument('--unlabeledtrain_batchsize', default=50, type=int)
 parser.add_argument("--em", default=0, type=float, help="coefficient of entropy minimization. If you try VAT + EM, set 0.06")
 
 #VAT config
-parser.add_argument('--dropout_rate', default=0.0, type=float, help='dropout_rate')
-
 parser.add_argument('--lr', default=3e-4, type=float, help='learning rate')
+parser.add_argument('--lr_warmup_epochs', default=0, type=float,
+                    help='warmup epoch for learning rate schedule') #following MixMatch and FixMatch repo
+
+parser.add_argument('--lr_schedule_type', default='CosineLR', choices=['CosineLR', 'FixedLR'], type=str) 
+parser.add_argument('--lr_cycle_epochs', default=10000, type=int) #following MixMatch and FixMatch repo
+
 
 parser.add_argument('--wd', default=5e-4, type=float, help='weight decay')
+parser.add_argument('--optimizer_type', default='SGD', choices=['SGD', 'Adam'], type=str) 
+
 
 parser.add_argument('--lambda_u_max', default=1, type=float, help='coefficient of unlabeled loss')
 
-parser.add_argument('--lr_warmup_img', default=0, type=float,
-                    help='warmup images for linear rate schedule') #following MixMatch and FixMatch repo
+parser.add_argument('--unlabeledloss_warmup_schedule_type', default='NoWarmup', choices=['NoWarmup', 'Linear', 'Sigmoid', ], type=str) 
 
-parser.add_argument('--optimizer_type', default='SGD', choices=['SGD', 'Adam'], type=str) 
-parser.add_argument('--lr_schedule_type', default='CosineLR', choices=['CosineLR', 'FixedLR'], type=str) 
-parser.add_argument('--lr_cycle_length', default='1048576', type=str) #following MixMatch and FixMatch repo
+parser.add_argument('--unlabeledloss_warmup_pos', default=0.4, type=float, help='position at which unlabeled loss warmup ends') #following MixMatch and FixMatch repo
 
-
-parser.add_argument('--unlabeledloss_warmup_iterations', default='16000', type=str, help='position at which unlabeled loss warmup ends') #following MixMatch and FixMatch repo
-parser.add_argument('--unlabeledloss_warmup_schedule_type', default='GoogleFixmatchMixmatchRepo_Exact', choices=['GoogleFixmatchMixmatchRepo_Exact', 'GoogleFixmatchMixmatchRepo_Like', 'YU1utRepo_Exact', 'YU1utRepo_Like', 'PerryingRepo_Exact', 'PerryingRepo_Like'], type=str) 
 
 
 #default hypers not to search for now
@@ -107,6 +107,9 @@ parser.add_argument('--ema_decay', default=0.999, type=float,
                     help='EMA decay rate')
 
 parser.add_argument('--num_classes', default=10, type=int)
+
+parser.add_argument('--dropout_rate', default=0.0, type=float, help='dropout_rate')
+
 
 def str2bool(s):
     if s == 'True':
@@ -134,12 +137,12 @@ def set_seed(seed):
     
     
 def get_cosine_schedule_with_warmup(optimizer,
-                                    num_warmup_steps,
-                                    lr_cycle_length, #total train iterations
+                                    lr_warmup_epochs,
+                                    lr_cycle_epochs, #total train epochs
                                     num_cycles=7./16.,
                                     last_epoch=-1):
-    def _lr_lambda(current_step):
-        if current_step < num_warmup_steps:
+    def _lr_lambda(current_epoch):
+        if current_epoch < lr_warmup_epochs:
             return float(current_step) / float(max(1, num_warmup_steps))
         no_progress = float(current_step - num_warmup_steps) / \
             float(max(1, float(lr_cycle_length) - num_warmup_steps))

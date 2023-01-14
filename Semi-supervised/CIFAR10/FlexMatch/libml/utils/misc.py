@@ -12,14 +12,9 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['get_mean_and_std', 'AverageMeter', 'train_one_epoch', 'eval_model', 'save_pickle', 'calculate_plain_accuracy', 'get_current_global_iteration']
+__all__ = ['get_mean_and_std', 'AverageMeter', 'train_one_epoch', 'eval_model', 'save_pickle', 'calculate_plain_accuracy']
 
-def get_current_global_iteration(args, current_epoch, current_batch_idx):
-    
-    current_global_iteration = current_epoch * (args.nimg_per_epoch//args.labeledtrain_batchsize) + (current_batch_idx + 1)
-    
-    return current_global_iteration
-    
+
 
 def interleave(x, size):
     s = list(x.shape)
@@ -34,6 +29,20 @@ def de_interleave(x, size):
     
 def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema_model, optimizer, scheduler, epoch, weights=None):
     
+    model.train()
+
+    args.writer.add_scalar('train/lr', scheduler.get_last_lr()[0], epoch)
+     #unlabeledloss warmup schedule choice
+    if args.unlabeledloss_warmup_schedule_type == 'NoWarmup':
+        current_warmup = 1
+    elif args.unlabeledloss_warmup_schedule_type == 'Linear':
+        current_warmup = np.clip(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 0, 1)
+    elif args.unlabeledloss_warmup_schedule_type == 'Sigmoid':
+        current_warmup = math.exp(-5 * (1 - min(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 1))**2)
+    else:
+        raise NameError('Not supported unlabeledloss warmup schedule')
+        
+        
     TotalLoss_this_epoch, LabeledLoss_this_epoch, UnlabeledLossUnscaled_this_epoch, UnlabeledLossScaled_this_epoch = [], [], [], []
     
     end_time = time.time()
@@ -41,7 +50,6 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
     labeledtrain_iter = iter(labeledtrain_loader)
     unlabeledtrain_iter = iter(unlabeledtrain_loader)
     
-    model.train()
     
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -56,6 +64,7 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
     p_bar = tqdm(range(n_steps_per_epoch), disable=False)
     
     #############################unique to FlexMatch compared to FixMatch#############################
+    print('initial len(unlabeledtrain_loader.dataset): {}'.format(len(unlabeledtrain_loader.dataset)))
     selected_label = torch.ones((len(unlabeledtrain_loader.dataset),), dtype=torch.long, ) * -1
     selected_label = selected_label.to(args.device)
     print('inital selected_label: {}'.format(selected_label))
@@ -78,17 +87,14 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
             unlabeledtrain_iter = iter(unlabeledtrain_loader)
             u_idx, (u_input_weak, u_input_strong), u_labels = unlabeledtrain_iter.next()
         
-        current_global_iteration = get_current_global_iteration(args, epoch, batch_idx)
-#         print('current_global_iteration is {}'.format(current_global_iteration))
-
         data_time.update(time.time() - end_time)
         
         
         #############################unique to FlexMatch compared to FixMatch#############################
         pseudo_counter = Counter(selected_label.tolist())
-        print('iter {} pseudo_counter: {}'.format(current_global_iteration, pseudo_counter))
-        print('iter {} max(pseudo_counter.values()) is {}'.format(current_global_iteration, max(pseudo_counter.values())))
-        print('iter {} len(unlabeledtrain_loader.dataset) is {}'.format(current_global_iteration, len(unlabeledtrain_loader.dataset)))
+        print('epoch{} batch{} pseudo_counter: {}'.format(epoch, batch_idx, pseudo_counter))
+        print('epoch{} batch{} max(pseudo_counter.values()) is {}'.format(epoch, batch_idx, max(pseudo_counter.values())))
+        print('epoch{} batch{} len(unlabeledtrain_loader.dataset) is {}'.format(epoch, batch_idx, len(unlabeledtrain_loader.dataset)))
         
         
         if max(pseudo_counter.values()) < len(unlabeledtrain_loader.dataset):
@@ -96,7 +102,7 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
             for i in range(args.num_classes):
                 print('class {}, pseudo_counter[{}]: {}'.format(i, i, pseudo_counter[i]))
                 classwise_acc[i] = pseudo_counter[i] / max(pseudo_counter.values())
-            print('iter {} classwise_acc: {}'.format(current_global_iteration, classwise_acc))
+            print('epoch{} batch{} classwise_acc: {}'.format(epoch, batch_idx, classwise_acc))
         #############################unique to FlexMatch compared to FixMatch#############################
         
         
@@ -132,33 +138,26 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
         unlabeledtrain_loss = (F.cross_entropy(logits_u_s, targets_u, reduction='none') * mask).mean()
         
         #############################unique to FlexMatch compared to FixMatch#############################
-        print('it {} select: {}'.format(current_global_iteration, select))
-        print('it {} u_idx: {}'.format(current_global_iteration, u_idx))
-        print('it {} u_idx[select == 1]: {}'.format(current_global_iteration, u_idx[select == 1]))
-        print('it {} u_idx[select == 1].nelement(): {}'.format(current_global_iteration, u_idx[select == 1].nelement()))
-        print('it {} pseudo_lb: {}'.format(current_global_iteration, pseudo_label))
-        print('it {} pseudo_lb[select == 1]: {}'.format(current_global_iteration, pseudo_label[select == 1])) 
+        print('epoch{} batch{} select: {}'.format(epoch, batch_idx, select))
+        print('epoch{} batch{} u_idx: {}'.format(epoch, batch_idx, u_idx))
+        print('epoch{} batch{} u_idx[select == 1]: {}'.format(epoch, batch_idx, u_idx[select == 1]))
+        print('epoch{} batch{} u_idx[select == 1].nelement(): {}'.format(epoch, batch_idx, u_idx[select == 1].nelement()))
+        print('epoch{} batch{} targets_u: {}'.format(epoch, batch_idx, targets_u))
+        print('epoch{} batch{} targets_u[select == 1]: {}'.format(epoch, batch_idx, targets_u[select == 1])) 
         if u_idx[select == 1].nelement() != 0:
-            selected_label[u_dix[select == 1]] = pseudo_label[select == 1]
+            selected_label[u_idx[select == 1]] = targets_u[select == 1]
             
-        
         #############################unique to FlexMatch compared to FixMatch#############################
-
-        #from FixMatch and MixMatch: warmup = tf.clip_by_value(tf.to_float(self.step) / (warmup_pos * (FLAGS.train_kimg << 10)), 0, 1)
-
-        args.writer.add_scalar('train/lr', scheduler.get_last_lr()[0], current_global_iteration)
 
         
 #         current_lambda_u = args.lambda_u_max * np.clip(current_global_iteration/(args.unlabeledloss_warmup_pos * args.train_iterations), 0, 1)
-        current_lambda_u = args.lambda_u_max * 1 #FixMatch algo did not use unlabeled loss rampup schedule
+        current_lambda_u = args.lambda_u_max * current_warmup #FixMatch algo did not use unlabeled loss rampup schedule
         
-        args.writer.add_scalar('train/lambda_u', current_lambda_u, current_global_iteration)
+        args.writer.add_scalar('train/lambda_u', current_lambda_u, epoch)
 
         loss = labeledtrain_loss + current_lambda_u * unlabeledtrain_loss
         
-        print('mask is {}'.format(mask))
-        args.writer.add_scalar('train/lambda_u', current_lambda_u, current_global_iteration)
-        args.writer.add_scalar('train/gt_mask', mask.mean(), current_global_iteration)
+#         print('mask is {}'.format(mask))
         
         if args.em > 0:
             raise NameError('Need to think about how to use em regularization in FixMatch')
@@ -181,7 +180,6 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
         UnlabeledLossScaled_this_epoch.append(unlabeledtrain_loss.item() * current_lambda_u)
         
         optimizer.step()
-        scheduler.step()
         
         #update ema model
         ema_model.update(model)
@@ -219,7 +217,11 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
     print('ema fc.weight: {}'.format(ema_model.ema.fc.weight.cpu().detach().numpy()))
 #     print('ema output.bias: {}'.format(ema_model.ema.output.bias.cpu().detach().numpy()))
         
+    args.writer.add_scalar('train/gt_mask', mask_probs.avg, epoch)
+
     p_bar.close()
+    scheduler.step()
+
         
     
     return TotalLoss_this_epoch, LabeledLoss_this_epoch, UnlabeledLossUnscaled_this_epoch, UnlabeledLossScaled_this_epoch
@@ -253,8 +255,8 @@ def eval_model(args, data_loader, raw_model, ema_model, epoch, evaluation_criter
         total_targets = []
         total_raw_outputs = []
         total_ema_outputs = []
-        
-        for batch_idx, (inputs, targets) in enumerate(data_loader):
+
+        for batch_idx, (_, inputs, targets) in enumerate(data_loader):
             data_time.update(time.time() - end_time)
             
             inputs = inputs.to(args.device).float()
