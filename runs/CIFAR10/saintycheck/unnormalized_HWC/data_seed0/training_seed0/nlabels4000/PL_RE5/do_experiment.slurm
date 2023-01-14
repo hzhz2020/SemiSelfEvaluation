@@ -20,6 +20,7 @@ python $script \
     --labeledtrain_batchsize $labeledtrain_batchsize\
     --unlabeledtrain_batchsize $unlabeledtrain_batchsize\
     --em $em\
+    --threshold $threshold\
     --lambda_u_max $lambda_u_max\
     --lr $lr\
     --wd $wd\

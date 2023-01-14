@@ -13,7 +13,7 @@ else
 fi
 experiment='saintycheck'
 
-export implementation='MT_RE4'
+export implementation='PL_RE5'
 export normalization='unnormalized_HWC'
 
 #hyperparameters inherit from Echo_ClinicalManualScript_torch style
@@ -58,7 +58,8 @@ export em=0 #default
 export optimizer_type='Adam'
 export lr=0.03
 export wd=0.0005
-export lambda_u_max=50.0
+export lambda_u_max=1.0
+export threshold=0.95
 
 
 export unlabeledloss_warmup_schedule_type='Linear'

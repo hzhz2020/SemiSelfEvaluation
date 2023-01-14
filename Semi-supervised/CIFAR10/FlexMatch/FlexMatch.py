@@ -104,8 +104,6 @@ parser.add_argument('--unlabeledloss_warmup_schedule_type', default='NoWarmup', 
 parser.add_argument('--unlabeledloss_warmup_pos', default=0.4, type=float, help='position at which unlabeled loss warmup ends') #following MixMatch and FixMatch repo
 
 
-
-
 #default hypers not to search for now
 parser.add_argument('--nesterov', action='store_true', default=True,
                     help='use nesterov momentum')

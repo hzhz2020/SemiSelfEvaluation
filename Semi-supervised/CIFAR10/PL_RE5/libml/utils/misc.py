@@ -11,13 +11,7 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-__all__ = ['get_mean_and_std', 'AverageMeter', 'train_one_epoch', 'eval_model', 'save_pickle', 'calculate_plain_accuracy', 'get_current_global_iteration']
-
-def get_current_global_iteration(args, current_epoch, current_batch_idx):
-    
-    current_global_iteration = current_epoch * (args.nimg_per_epoch//args.labeledtrain_batchsize) + (current_batch_idx + 1)
-    
-    return current_global_iteration
+__all__ = ['get_mean_and_std', 'AverageMeter', 'train_one_epoch', 'eval_model', 'save_pickle', 'calculate_plain_accuracy']
     
                                  
     
@@ -28,6 +22,20 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
     #same as Oliver et al 2018, which use vanilla logits when unlabeled samples has maximum probability below threshold
     '''
     
+    model.train()
+
+    args.writer.add_scalar('train/lr', scheduler.get_last_lr()[0], epoch)
+     #unlabeledloss warmup schedule choice
+    if args.unlabeledloss_warmup_schedule_type == 'NoWarmup':
+        current_warmup = 1
+    elif args.unlabeledloss_warmup_schedule_type == 'Linear':
+        current_warmup = np.clip(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 0, 1)
+    elif args.unlabeledloss_warmup_schedule_type == 'Sigmoid':
+        current_warmup = math.exp(-5 * (1 - min(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 1))**2)
+    else:
+        raise NameError('Not supported unlabeledloss warmup schedule')
+        
+        
     TotalLoss_this_epoch, LabeledLoss_this_epoch, UnlabeledLossUnscaled_this_epoch, UnlabeledLossScaled_this_epoch = [], [], [], []
     
     end_time = time.time()
@@ -35,7 +43,6 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
     labeledtrain_iter = iter(labeledtrain_loader)
     unlabeledtrain_iter = iter(unlabeledtrain_loader)
     
-    model.train()
     
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -94,37 +101,8 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
         unlabeledtrain_loss, gt_mask = ssl_obj(combined_input, combined_outputs, model, unlabeled_mask)
         
         #from FixMatch and MixMatch: warmup = tf.clip_by_value(tf.to_float(self.step) / (warmup_pos * (FLAGS.train_kimg << 10)), 0, 1)
-        current_global_iteration = get_current_global_iteration(args, epoch, batch_idx)
-#         print('current_global_iteration is {}'.format(current_global_iteration))
-        
-        args.writer.add_scalar('train/lr', scheduler.get_last_lr()[0], current_global_iteration)
-
-        #unlabeledloss warmup schedule choice
-        if args.unlabeledloss_warmup_schedule_type == 'GoogleFixmatchMixmatchRepo_Exact':
-            current_lambda_u = args.lambda_u_max * np.clip(current_global_iteration/419430, 0, 1)
-        
-        elif args.unlabeledloss_warmup_schedule_type == 'GoogleFixmatchMixmatchRepo_Like':
-            current_lambda_u = args.lambda_u_max * np.clip(current_global_iteration/float(args.unlabeledloss_warmup_iterations), 0, 1)
-        
-        elif args.unlabeledloss_warmup_schedule_type == 'YU1utRepo_Exact':
-            current_lambda_u = args.lambda_u_max * np.clip((current_global_iteration//1024)/1024, 0, 1)
-        
-        elif args.unlabeledloss_warmup_schedule_type == 'YU1utRepo_Like':
-            current_lambda_u = args.lambda_u_max * np.clip(epoch/args.train_epoch, 0, 1)
-            
-        elif args.unlabeledloss_warmup_schedule_type == 'PerryingRepo_Exact':
-            current_lambda_u = args.lambda_u_max * math.exp(-5 * (1 - min(current_global_iteration/200000, 1))**2)
-        
-        elif args.unlabeledloss_warmup_schedule_type == 'PerryingRepo_Like':
-            current_lambda_u = args.lambda_u_max * math.exp(-5 * (1 - min(current_global_iteration/float(args.unlabeledloss_warmup_iterations), 1))**2)
-        
-        else:
-            raise NameError('Not supported unlabeledloss warmup schedule')   
                     
-        
-        print('gt_mask is {}'.format(gt_mask))
-        args.writer.add_scalar('train/lambda_u', current_lambda_u, current_global_iteration)
-        args.writer.add_scalar('train/gt_mask', gt_mask.mean(), current_global_iteration)
+        current_lambda_u = args.lambda_u_max * current_warmup #FixMatch algo did not use unlabeled loss rampup schedule
 
         loss = labeledtrain_loss + current_lambda_u * unlabeledtrain_loss
         
@@ -147,7 +125,6 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
         UnlabeledLossScaled_this_epoch.append(unlabeledtrain_loss.item() * current_lambda_u)
         
         optimizer.step()
-        scheduler.step()
         
         #update ema model
         ema_model.update(model)
@@ -185,7 +162,11 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
     print('ema fc.weight: {}'.format(ema_model.ema.fc.weight.cpu().detach().numpy()))
 #     print('ema output.bias: {}'.format(ema_model.ema.output.bias.cpu().detach().numpy()))
         
+    args.writer.add_scalar('train/gt_mask', mask_probs.avg, epoch)
+
     p_bar.close()
+    scheduler.step()
+
         
     
     return TotalLoss_this_epoch, LabeledLoss_this_epoch, UnlabeledLossUnscaled_this_epoch, UnlabeledLossScaled_this_epoch
