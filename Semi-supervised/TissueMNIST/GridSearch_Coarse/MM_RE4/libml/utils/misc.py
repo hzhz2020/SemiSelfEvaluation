@@ -150,10 +150,10 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
         #label guessing
         with torch.no_grad():
             #compute guessed labels of unlabel samples
-            print('start label guessing')
+#             print('start label guessing')
             u_output1 = model(inputs_u)
             u_output2 = model(inputs_u2)
-            print('end label guessing')
+#             print('end label guessing')
             #for debugging:
 #             print('u_output1 is {}'.format(u_output1))
 #             print('u_output2 is {}'.format(u_output2))
@@ -266,10 +266,10 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
         
         
 ##for debugging
-    print('fc.weight: {}'.format(model.fc.weight.cpu().detach().numpy()))
+#     print('fc.weight: {}'.format(model.fc.weight.cpu().detach().numpy()))
 #     print('output.bias: {}'.format(model.output.bias.cpu().detach().numpy()))
         
-    print('ema fc.weight: {}'.format(ema_model.ema.fc.weight.cpu().detach().numpy()))
+#     print('ema fc.weight: {}'.format(ema_model.ema.fc.weight.cpu().detach().numpy()))
 #     print('ema output.bias: {}'.format(ema_model.ema.output.bias.cpu().detach().numpy()))
         
     p_bar.close()

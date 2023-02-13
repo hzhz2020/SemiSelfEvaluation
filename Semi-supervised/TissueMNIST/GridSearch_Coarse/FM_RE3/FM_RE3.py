@@ -286,7 +286,10 @@ def main(args):
     global_writer.add_scalar('global_test/1.global_best_test_raw_acc_at_val', global_best_test_raw_acc_at_val, 0)
     global_writer.add_scalar('global_test/2.global_best_test_ema_acc_at_val', global_best_test_ema_acc_at_val, 0)
 
-
+    #start timing
+    FiveHourCount_start_time = time.time()
+    record_count=0
+    
     for lr in [3e-5, 3e-4, 3e-3]:
         for wd in [5e-5, 5e-4, 5e-3]:
             for lambda_u_max in [0.1, 1, 10]:
@@ -442,8 +445,6 @@ def main(args):
                 early_stopping = EarlyStopping(patience=args.patience, initial_count=current_count)
 
 
-                #start timing
-                TenHourCount_start_time = time.time()
                 for epoch in range(args.start_epoch, args.train_epoch):
                     val_predictions_save_dict = dict()
                     test_predictions_save_dict = dict()
@@ -504,6 +505,10 @@ def main(args):
 
             #                 save_pickle(os.path.join(args.experiment_dir, 'best_predictions_at_raw_val'), 'train_predictions.pkl', train_predictions_save_dict)
 
+                        if best_val_raw_acc > global_best_val_raw_acc:
+                            global_best_val_raw_acc = best_val_raw_acc
+                            global_best_test_raw_acc_at_val = best_test_raw_acc_at_val
+            
 
                         if val_ema_acc > best_val_ema_acc:
                             is_best=True
@@ -521,9 +526,12 @@ def main(args):
                             global_best_val_ema_acc = best_val_ema_acc
                             global_best_test_ema_acc_at_val = best_test_ema_acc_at_val
 
-                        elapsed_time = round((time.time() - TenHourCount_start_time)/ 3600, 2) #in hour
-
-                        if elapsed_time >=10:
+                        elapsed_time = round((time.time() - FiveHourCount_start_time)/ 3600, 2) #in hour
+                        print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!elapsed_time: {}'.format(elapsed_time))
+                        
+                        if elapsed_time >=5:
+                            record_count += 1
+                            
                             global_best_val_raw_acc_list.append(global_best_val_raw_acc)
                             global_best_test_raw_acc_at_val_list.append(global_best_test_raw_acc_at_val)
 
@@ -531,15 +539,22 @@ def main(args):
                             global_best_test_ema_acc_at_val_list.append(global_best_test_ema_acc_at_val)
 
                             elapsed_time_for_each_global_record_list.append(elapsed_time)
+                            
+                            save_pickle(os.path.join(args.train_dir, 'global_stats'), 'global_best_val_raw_acc_list.pkl', global_best_val_raw_acc_list)
+                            save_pickle(os.path.join(args.train_dir, 'global_stats'), 'global_best_test_raw_acc_at_val_list.pkl', global_best_test_raw_acc_at_val_list)
+                            save_pickle(os.path.join(args.train_dir, 'global_stats'), 'global_best_val_ema_acc_list.pkl', global_best_val_ema_acc_list)
+                            save_pickle(os.path.join(args.train_dir, 'global_stats'), 'global_best_test_ema_acc_at_val_list.pkl', global_best_test_ema_acc_at_val_list)
+                            save_pickle(os.path.join(args.train_dir, 'global_stats'), 'elapsed_time_for_each_global_record_list.pkl', elapsed_time_for_each_global_record_list)
+                            
 
-                            global_writer.add_scalar('global_val/1.global_best_val_raw_acc', global_best_val_raw_acc, np.sum(elapsed_time_for_each_global_record_list))
-                            global_writer.add_scalar('global_val/2.global_best_val_ema_acc', global_best_val_ema_acc, np.sum(elapsed_time_for_each_global_record_list))
+                            global_writer.add_scalar('global_val/1.global_best_val_raw_acc', global_best_val_raw_acc, record_count)
+                            global_writer.add_scalar('global_val/2.global_best_val_ema_acc', global_best_val_ema_acc, record_count)
 
-                            global_writer.add_scalar('global_test/1.global_best_test_raw_acc_at_val', global_best_test_raw_acc_at_val, np.sum(elapsed_time_for_each_global_record_list))
-                            global_writer.add_scalar('global_test/2.global_best_test_ema_acc_at_val', global_best_test_ema_acc_at_val, np.sum(elapsed_time_for_each_global_record_list))
+                            global_writer.add_scalar('global_test/1.global_best_test_raw_acc_at_val', global_best_test_raw_acc_at_val, record_count)
+                            global_writer.add_scalar('global_test/2.global_best_test_ema_acc_at_val', global_best_test_ema_acc_at_val, record_count)
 
                             #reinitialize 
-                            TenHourCount_start_time = 0
+                            FiveHourCount_start_time = time.time()
 
 
                         logger.info('RAW Best , validation/test %.2f %.2f' % (best_val_raw_acc, best_test_raw_acc_at_val))
