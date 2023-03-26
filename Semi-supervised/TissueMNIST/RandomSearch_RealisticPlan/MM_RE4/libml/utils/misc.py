@@ -75,7 +75,7 @@ def interleave(xy, batch):
     return [torch.cat(v, dim=0) for v in xy]
 
     
-def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema_model, optimizer, scheduler, epoch, weights=None):
+def train_one_epoch(args, weights, labeledtrain_loader, unlabeledtrain_loader, model, ema_model, optimizer, scheduler, epoch):
     
     '''
     this implementation follow: https://github.com/perrying/realistic-ssl-evaluation-pytorch/blob/master/lib/algs/pseudo_label.py
@@ -89,9 +89,9 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
     if args.unlabeledloss_warmup_schedule_type == 'NoWarmup':
         current_warmup = 1
     elif args.unlabeledloss_warmup_schedule_type == 'Linear':
-        current_warmup = np.clip(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 0, 1)
+        current_warmup = np.clip(epoch/(float(args.unlabeledloss_warmup_pos) * args.train_epoch), 0, 1)
     elif args.unlabeledloss_warmup_schedule_type == 'Sigmoid':
-        current_warmup = math.exp(-5 * (1 - min(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 1))**2)
+        current_warmup = math.exp(-5 * (1 - min(epoch/(float(args.unlabeledloss_warmup_pos) * args.train_epoch), 1))**2)
     else:
         raise NameError('Not supported unlabeledloss warmup schedule')
         
@@ -201,8 +201,9 @@ def train_one_epoch(args, labeledtrain_loader, unlabeledtrain_loader, model, ema
         #Lx, Lu, w = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:], epoch+batch_idx/args.train_iteration)
 
         #labeled loss
-        labeledtrain_loss = -torch.mean(torch.sum(F.log_softmax(logits_x, dim=1) * mixed_target[:batch_size], dim=1))
-        
+#         labeledtrain_loss = -torch.mean(torch.sum(F.log_softmax(logits_x, dim=1) * mixed_target[:batch_size], dim=1))
+        labeledtrain_loss = F.cross_entropy(logits_x, mixed_target[:batch_size], weights, reduction='mean')
+
         
         #from FixMatch and MixMatch: warmup = tf.clip_by_value(tf.to_float(self.step) / (warmup_pos * (FLAGS.train_kimg << 10)), 0, 1)   
         

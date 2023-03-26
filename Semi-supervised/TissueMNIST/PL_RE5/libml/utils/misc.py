@@ -66,9 +66,9 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
     if args.unlabeledloss_warmup_schedule_type == 'NoWarmup':
         current_warmup = 1
     elif args.unlabeledloss_warmup_schedule_type == 'Linear':
-        current_warmup = np.clip(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 0, 1)
+        current_warmup = np.clip(epoch/(float(args.unlabeledloss_warmup_pos) * args.train_epoch), 0, 1)
     elif args.unlabeledloss_warmup_schedule_type == 'Sigmoid':
-        current_warmup = math.exp(-5 * (1 - min(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 1))**2)
+        current_warmup = math.exp(-5 * (1 - min(epoch/(float(args.unlabeledloss_warmup_pos) * args.train_epoch), 1))**2)
     else:
         raise NameError('Not supported unlabeledloss warmup schedule')
         

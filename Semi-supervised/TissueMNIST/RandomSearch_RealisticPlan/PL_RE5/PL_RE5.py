@@ -111,6 +111,7 @@ parser.add_argument('--ema_decay', default=0.999, type=float,
                     help='EMA decay rate')
 
 parser.add_argument('--num_classes', default=8, type=int)
+parser.add_argument('--total_hour', default=50, type=int, help='total hours to run')
 
 
 #pretrained weights for resnet18
@@ -203,6 +204,12 @@ def create_model(args):
 
 
 def main(args):
+    
+    #SemiSelfEvaluationProject/SemiSelfEvaluation/check_dataset/MedMNIST/TissueMNIST_hz_split_realisticplan.ipynb
+    TissueMNIST_precalculated_class_weights = [0.029, 0.195, 0.247, 0.1, 0.132, 0.195, 0.039, 0.063]
+    weights = torch.Tensor(TissueMNIST_precalculated_class_weights)
+#     print('weights used is {}'.format(weights))
+    weights = weights.to(args.device)
     
     #define transform for each part of the dataset
     #SemiSelfEvaluation/check_dataset/MedMNIST/TissueMNIST_original.ipynb
@@ -300,7 +307,7 @@ def main(args):
     current_best_hypercombo_raw_at_each_evaluation_point_list = []
     current_best_hypercombo_raw_at_each_evaluation_point_list.append(dict())
     
-    FiveHourCount_start_time = time.time()
+    OneHourCount_start_time = time.time()
     record_count=0
     total_used_time = 0
     
@@ -308,7 +315,7 @@ def main(args):
     #Wd: loguniform base 10, [4*10^(-6) to 4*10^(-3)]
     #Lambda_u_max: loguniform base 10, [1*10^(-1) to 1*10^(1)]
     
-    while total_used_time <= 100: #run for 100 hour
+    while total_used_time <= args.total_hour: #run for 100 hour
         lr = sample_loguniform(low=-5, high=-2, size=1, coefficient=3, base=10)
         wd = sample_loguniform(low=-6, high=-3, size=1, coefficient=4, base=10)
         lambda_u_max = sample_loguniform(low=-1, high=1, size=1, coefficient=1, base=10)
@@ -482,7 +489,7 @@ def main(args):
     #         train_predictions_save_dict = dict()
 
             #train
-            train_total_loss_list, train_labeled_loss_list, train_unlabeled_loss_unscaled_list, train_unlabeled_loss_scaled_list = train_one_epoch(args, ssl_obj, l_loader, u_loader, model, ema_model, optimizer, scheduler, epoch)
+            train_total_loss_list, train_labeled_loss_list, train_unlabeled_loss_unscaled_list, train_unlabeled_loss_scaled_list = train_one_epoch(args, weights, ssl_obj, l_loader, u_loader, model, ema_model, optimizer, scheduler, epoch)
 
             train_loss_dict['train_total_loss'].extend(train_total_loss_list)
             train_loss_dict['labeled_loss'].extend(train_labeled_loss_list)
@@ -574,12 +581,12 @@ def main(args):
                     global_best_test_ema_acc_at_val = best_test_ema_acc_at_val
 
 
-                elapsed_time = round((time.time() - FiveHourCount_start_time)/ 3600, 2) #in hour
+                elapsed_time = round((time.time() - OneHourCount_start_time)/ 3600, 2) #in hour
                 print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!elapsed_time: {}'.format(elapsed_time))
 
-                if elapsed_time >=5:
+                if elapsed_time >=1:
                     record_count += 1
-                    total_used_time+=5
+                    total_used_time+=1
                     current_best_hypercombo_ema_at_each_evaluation_point_list.append(global_best_hypercombo_ema.copy())
                     current_best_hypercombo_raw_at_each_evaluation_point_list.append(global_best_hypercombo_raw.copy())
                     
@@ -610,7 +617,7 @@ def main(args):
 
 
                     #reinitialize 
-                    FiveHourCount_start_time = time.time()
+                    OneHourCount_start_time = time.time()
 
                 logger.info('RAW Best , validation/test %.2f %.2f' % (best_val_raw_acc, best_test_raw_acc_at_val))
                 logger.info('EMA Best, validation/test %.2f %.2f' % (best_val_ema_acc, best_test_ema_acc_at_val))

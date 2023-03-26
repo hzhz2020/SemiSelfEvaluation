@@ -54,7 +54,7 @@ class EarlyStopping:
             self.counter = 0
             
     
-def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, model, ema_model, optimizer, scheduler, epoch, weights=None):
+def train_one_epoch(args, weights, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, model, ema_model, optimizer, scheduler, epoch):
     
     '''
     this implementation follow: https://github.com/perrying/realistic-ssl-evaluation-pytorch/blob/master/lib/algs/pseudo_label.py
@@ -68,9 +68,9 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
     if args.unlabeledloss_warmup_schedule_type == 'NoWarmup':
         current_warmup = 1
     elif args.unlabeledloss_warmup_schedule_type == 'Linear':
-        current_warmup = np.clip(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 0, 1)
+        current_warmup = np.clip(epoch/(float(args.unlabeledloss_warmup_pos) * args.train_epoch), 0, 1)
     elif args.unlabeledloss_warmup_schedule_type == 'Sigmoid':
-        current_warmup = math.exp(-5 * (1 - min(epoch/float(args.unlabeledloss_warmup_pos) * args.train_epoch, 1))**2)
+        current_warmup = math.exp(-5 * (1 - min(epoch/(float(args.unlabeledloss_warmup_pos) * args.train_epoch), 1))**2)
     else:
         raise NameError('Not supported unlabeledloss warmup schedule')
     
@@ -129,7 +129,7 @@ def train_one_epoch(args, ssl_obj, labeledtrain_loader, unlabeledtrain_loader, m
         combined_outputs = model(combined_input) #outputs from model is pre-softmax
         
         
-        labeledtrain_loss = F.cross_entropy(combined_outputs, combined_labels, reduction='none', ignore_index=-1).mean()
+        labeledtrain_loss = F.cross_entropy(combined_outputs, combined_labels, weights, reduction='none', ignore_index=-1).mean()
         
 #         print('CALCULATING UNLABELED LOSS')
         unlabeledtrain_loss = ssl_obj(inputs_u2, combined_outputs, ema_model.ema, unlabeled_mask)
