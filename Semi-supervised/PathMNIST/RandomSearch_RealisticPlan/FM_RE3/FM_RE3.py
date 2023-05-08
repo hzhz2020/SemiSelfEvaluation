@@ -119,6 +119,7 @@ parser.add_argument('--ema_decay', default=0.999, type=float,
 
 parser.add_argument('--num_classes', default=9, type=int)
 parser.add_argument('--total_hour', default=50, type=int, help='total hours to run')
+parser.add_argument('--num_workers', default=12, type=int)
 
 
 #pretrained weights for resnet18
@@ -399,10 +400,10 @@ def main(args):
     # }
 
 
-        l_loader = DataLoader(l_train_dataset, args.labeledtrain_batchsize, shuffle=True, drop_last=True)
-        u_loader = DataLoader(u_train_dataset, args.unlabeledtrain_batchsize, shuffle=True, drop_last=True)
-        val_loader = DataLoader(val_dataset, 128, shuffle=False, drop_last=False)
-        test_loader = DataLoader(test_dataset, 128, shuffle=False, drop_last=False)
+        l_loader = DataLoader(l_train_dataset, args.labeledtrain_batchsize, shuffle=True, drop_last=True, num_workers=args.num_workers)
+        u_loader = DataLoader(u_train_dataset, args.unlabeledtrain_batchsize, shuffle=True, drop_last=True, num_workers=args.num_workers)
+        val_loader = DataLoader(val_dataset, 128, shuffle=False, drop_last=False, num_workers=args.num_workers)
+        test_loader = DataLoader(test_dataset, 128, shuffle=False, drop_last=False, num_workers=args.num_workers)
 
         #create model
         model = create_model(args) 
